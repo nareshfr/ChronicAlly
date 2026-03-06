@@ -6,7 +6,7 @@ import os
 import time 
 import pubchempy as pcp
 
-FILE_PATH = "ChronicAlly\db_drug_interactions.csv"
+FILE_PATH = "data/db_drug_interactions.csv"
 if not os.path.exists(FILE_PATH):
     print(f"Error: {FILE_PATH} not found in current directory.")
 else:

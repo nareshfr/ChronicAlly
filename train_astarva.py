@@ -10,8 +10,8 @@ import joblib
 
 # 1. LOAD DATA
 print("Step 1: Loading data...")
-df = pd.read_csv("ChronicAlly/db_drug_interactions.csv")
-smiles_df = pd.read_csv("ChronicAlly/smiles_mapping.csv")
+df = pd.read_csv("data/db_drug_interactions.csv")
+smiles_df = pd.read_csv("smiles_mapping.csv")
 
 # 2. IMPROVED SEVERITY EXTRACTOR (Detects more categories)
 def encode_severity(text):

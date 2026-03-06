@@ -1,0 +1,13 @@
+# Ignore the heavy stuff
+.venv/
+mvenv/
+venv/
+
+# Ignore the "Secret" data and models
+*.csv
+*.pkl
+*.dll
+
+# Ignore Python junk
+__pycache__/
+.pytest_cache/

@@ -8,7 +8,7 @@ import os
 import itertools
 
 # --- 1. PAGE SETUP ---
-st.set_page_config(page_title="ASTARVA 2026", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Chronic Ally", page_icon="🛡️", layout="wide")
 
 # --- 2. LOAD ASSETS (Optimized Caching) ---
 @st.cache_resource

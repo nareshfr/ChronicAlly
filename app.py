@@ -1,6 +1,8 @@
 import streamlit as st
 import random
 import textwrap
+import time
+import io
 import requests
 import pandas as pd
 from itertools import combinations
@@ -381,16 +383,239 @@ def generate_llm_summary(technical_report: dict) -> str:
         ),
     }
 
+    _default_risk = (
+        f"**Interaction Assessment** — **{drug_a}** and **{drug_b}** "
+        f"interaction severity: **{sev}** (confidence: {confidence}%). "
+        "Please consult a healthcare professional for guidance."
+    )
+    _default_action = (
+        "1. **Consult your physician** for personalised advice.\n"
+        "2. Do not change your medication regimen without professional guidance."
+    )
+
     summary = (
         f"**📌 Risk Summary**\n\n"
-        f"{RISK_SUMMARIES[sev]}\n\n"
+        f"{RISK_SUMMARIES.get(sev, _default_risk)}\n\n"
         f"**🔬 Biological Reason**\n\n"
         f"{reason}\n\n"
         f"**✅ Suggested Action**\n\n"
-        f"{SUGGESTED_ACTIONS[sev]}"
+        f"{SUGGESTED_ACTIONS.get(sev, _default_action)}"
     )
     return summary
 
+
+
+# ──────────────────────────────────────────────
+# PDF Safety Report Generator
+# ──────────────────────────────────────────────
+def _pdf_escape(text: str) -> str:
+    """Escape special PDF characters in text strings."""
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def generate_safety_report(patient_data: dict, results: list[dict]) -> bytes:
+    """Generate a simple PDF safety report from analysis results (no external deps)."""
+    # Build readable text content
+    lines: list[str] = []
+    lines.append("MedGuard AI  -  Drug Interaction Safety Report")
+    lines.append(f"Generated: {time.strftime('%Y-%m-%d %H:%M')}")
+    lines.append("")
+    lines.append("--- Patient Context ---")
+    lines.append(f"  Age: {patient_data.get('age', 'N/A')}")
+    lines.append(f"  Renal: {patient_data.get('renal', 'N/A')}")
+    lines.append(f"  Liver: {patient_data.get('liver', 'N/A')}")
+    lines.append(f"  Pregnant: {'Yes' if patient_data.get('is_pregnant') else 'No'}")
+    conditions = []
+    if patient_data.get("diabetes"): conditions.append("Diabetes")
+    if patient_data.get("asthma"): conditions.append("Asthma/COPD")
+    if patient_data.get("heart"): conditions.append("Heart Condition")
+    lines.append(f"  Conditions: {', '.join(conditions) if conditions else 'None'}")
+    lines.append("")
+
+    for idx, res in enumerate(results, 1):
+        pair = res.get("pair", ("?", "?"))
+        lines.append(f"--- Pair {idx}: {pair[0]}  <->  {pair[1]} ---")
+        lines.append(f"  Severity : {res.get('severity', 'Unknown')}")
+        lines.append(f"  Confidence: {res.get('confidence', 0)}%")
+        reason = res.get("reason", "")
+        if reason:
+            # Wrap long reason text
+            for r_line in reason.split("\n"):
+                lines.append(f"  {r_line.strip()}")
+        notes = res.get("patient_notes", [])
+        if notes:
+            lines.append("  Patient factors:")
+            for n in notes:
+                lines.append(f"    - {n}")
+        lines.append("")
+
+    lines.append("--- Disclaimer ---")
+    lines.append("This is an AI-generated prototype report for ASTRAVA 2026.")
+    lines.append("Consult a certified medical professional before making clinical decisions.")
+
+    # ── Build a minimal valid PDF ──
+    font_size = 10
+    leading = 14  # line spacing in points
+    margin_left = 50
+    margin_top = 750
+    page_width = 612
+    page_height = 792
+
+    # Pre-render lines per page
+    pages: list[list[str]] = []
+    current_page: list[str] = []
+    y = margin_top
+    for line in lines:
+        if y < 50:  # need a new page
+            pages.append(current_page)
+            current_page = []
+            y = margin_top
+        current_page.append((line, y))
+        y -= leading
+    if current_page:
+        pages.append(current_page)
+
+    buf = io.BytesIO()
+    offsets: list[int] = []
+    obj_num = 0
+
+    def write(s: str):
+        buf.write(s.encode("latin-1"))
+
+    def start_obj():
+        nonlocal obj_num
+        obj_num += 1
+        offsets.append(buf.tell())
+        write(f"{obj_num} 0 obj\n")
+        return obj_num
+
+    write("%PDF-1.4\n")
+
+    # Obj 1 — Catalog
+    cat_id = start_obj()
+    write("<< /Type /Catalog /Pages 2 0 R >>\n")
+    write("endobj\n")
+
+    # Obj 2 — Pages (placeholder, we'll overwrite)
+    pages_id = start_obj()
+    pages_obj_offset = offsets[-1]
+
+    page_obj_ids: list[int] = []
+    # Reserve space — we'll rewrite this object at the end
+    write("<< /Type /Pages /Kids [] /Count 0 >>\n")
+    write("endobj\n")
+
+    # Obj 3 — Font
+    font_id = start_obj()
+    write("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n")
+    write("endobj\n")
+
+    # Now create page objects + content streams
+    for page_lines in pages:
+        # Content stream
+        stream_lines = [f"BT /F1 {font_size} Tf"]
+        for line_text, y_pos in page_lines:
+            escaped = _pdf_escape(line_text)
+            stream_lines.append(f"{margin_left} {y_pos} Td ({escaped}) Tj")
+            stream_lines.append(f"-{margin_left} -{y_pos} Td")  # reset position
+        stream_lines.append("ET")
+        stream_data = "\n".join(stream_lines)
+
+        content_id = start_obj()
+        write(f"<< /Length {len(stream_data)} >>\n")
+        write(f"stream\n{stream_data}\nendstream\n")
+        write("endobj\n")
+
+        page_id = start_obj()
+        page_obj_ids.append(page_id)
+        write(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width} {page_height}] ")
+        write(f"/Contents {content_id} 0 R ")
+        write(f"/Resources << /Font << /F1 {font_id} 0 R >> >> >>\n")
+        write("endobj\n")
+
+    # Rewrite the Pages object in place by seeking back
+    kids_str = " ".join(f"{pid} 0 R" for pid in page_obj_ids)
+    new_pages_obj = f"<< /Type /Pages /Kids [{kids_str}] /Count {len(page_obj_ids)} >>"
+    # We can't easily seek-overwrite in a stream, so just append a new Pages obj
+    # and update the catalog. Actually, simpler: rebuild the whole thing cleanly.
+    # Let's just rebuild:
+    buf2 = io.BytesIO()
+    offsets2: list[int] = []
+    obj_count = 0
+
+    def write2(s: str):
+        buf2.write(s.encode("latin-1"))
+
+    def start_obj2():
+        nonlocal obj_count
+        obj_count += 1
+        offsets2.append(buf2.tell())
+        write2(f"{obj_count} 0 obj\n")
+        return obj_count
+
+    write2("%PDF-1.4\n")
+
+    # Obj 1 — Catalog
+    start_obj2()
+    write2("<< /Type /Catalog /Pages 2 0 R >>\n")
+    write2("endobj\n")
+
+    # Obj 2 — Pages (will reference page objects starting at obj 4)
+    start_obj2()
+    page_ids_final: list[int] = []
+    # We need to know page object IDs in advance
+    # Layout: obj3=font, then for each page: obj(content), obj(page)
+    next_id = 4  # obj3 is font, page objects start after
+    for _ in pages:
+        next_id += 1  # content stream
+        page_ids_final.append(next_id)
+        next_id += 1  # page object
+    kids_refs = " ".join(f"{pid} 0 R" for pid in page_ids_final)
+    write2(f"<< /Type /Pages /Kids [{kids_refs}] /Count {len(pages)} >>\n")
+    write2("endobj\n")
+
+    # Obj 3 — Font
+    start_obj2()
+    write2("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n")
+    write2("endobj\n")
+
+    # Page content + page objects
+    for page_lines in pages:
+        stream_lines = [f"BT /F1 {font_size} Tf"]
+        for line_text, y_pos in page_lines:
+            escaped = _pdf_escape(line_text)
+            stream_lines.append(f"{margin_left} {y_pos} Td ({escaped}) Tj")
+            stream_lines.append(f"-{margin_left} -{y_pos} Td")
+        stream_lines.append("ET")
+        stream_data = "\n".join(stream_lines)
+
+        cid = start_obj2()
+        write2(f"<< /Length {len(stream_data)} >>\n")
+        write2(f"stream\n{stream_data}\nendstream\n")
+        write2("endobj\n")
+
+        pid = start_obj2()
+        write2(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width} {page_height}] ")
+        write2(f"/Contents {cid} 0 R ")
+        write2(f"/Resources << /Font << /F1 3 0 R >> >> >>\n")
+        write2("endobj\n")
+
+    # Cross-reference table
+    xref_offset = buf2.tell()
+    write2("xref\n")
+    write2(f"0 {obj_count + 1}\n")
+    write2("0000000000 65535 f \n")
+    for off in offsets2:
+        write2(f"{off:010d} 00000 n \n")
+
+    # Trailer
+    write2("trailer\n")
+    write2(f"<< /Size {obj_count + 1} /Root 1 0 R >>\n")
+    write2("startxref\n")
+    write2(f"{xref_offset}\n")
+    write2("%%EOF\n")
+
+    return buf2.getvalue()
 
 
 # Mock Alternative Drugs
@@ -700,8 +925,13 @@ else:
                         "label": "LOW RISK — GENERALLY SAFE",
                         "fn": st.success,
                     },
+                    "Unknown": {
+                        "icon": "⚪",
+                        "label": "UNABLE TO DETERMINE RISK",
+                        "fn": st.info,
+                    },
                 }
-                cfg = SEVERITY_CONFIG[severity]
+                cfg = SEVERITY_CONFIG.get(severity, SEVERITY_CONFIG["Unknown"])
                 cfg["fn"](f"**{cfg['icon']} {cfg['label']}**")
 
                 #Patient-specific alerts

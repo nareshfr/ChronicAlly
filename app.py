@@ -1,6 +1,8 @@
 import streamlit as st
 import random
 import textwrap
+import requests
+import pandas as pd
 from itertools import combinations
 from chatbot import render_chatbot
 
@@ -252,102 +254,54 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Mock Drug List
-
-DRUG_LIST: list[str] = [
-    "Aspirin",
-    "Warfarin",
-    "Ibuprofen",
-    "Metformin",
-    "Lisinopril",
-    "Amoxicillin",
-    "Omeprazole",
-    "Atorvastatin",
-    "Ciprofloxacin",
-    "Metoprolol",
-]
+# Load Drug List from Mapping File
+try:
+    smiles_df = pd.read_csv("smiles_mapping.csv")
+    DRUG_LIST = sorted(smiles_df["drug_name"].dropna().unique().tolist())
+except Exception as e:
+    # Fallback just in case
+    DRUG_LIST = [
+        "Aspirin", "Warfarin", "Ibuprofen", "Metformin", "Lisinopril",
+        "Amoxicillin", "Omeprazole", "Atorvastatin", "Ciprofloxacin", "Metoprolol"
+    ]
 
 # ──────────────────────────────────────────────
-# Mock Prediction Function
+# Real ML Prediction Function
 # ──────────────────────────────────────────────
 def predict_interaction(
     drug_a: str, drug_b: str, patient_data: dict
 ) -> dict:
-    """Return a mock interaction prediction based on the drug pair.
-
-    Uses a deterministic hash so the same inputs always produce
-    the same result, while still *looking* realistic.
-    """
-    # Deterministic seed from the drug pair (order-independent)
-    seed = hash(frozenset([drug_a, drug_b])) % 10_000
-    rng = random.Random(seed)
-
-    # --- severity buckets ------------------------------------------------
-    INTERACTIONS: dict[frozenset, str] = {
-        frozenset(["Aspirin", "Warfarin"]): "Critical",
-        frozenset(["Ibuprofen", "Warfarin"]): "Critical",
-        frozenset(["Ciprofloxacin", "Warfarin"]): "High Risk",
-        frozenset(["Aspirin", "Ibuprofen"]): "Moderate",
-        frozenset(["Metformin", "Ciprofloxacin"]): "Moderate",
-        frozenset(["Atorvastatin", "Omeprazole"]): "Moderate",
-        frozenset(["Omeprazole", "Metformin"]): "Minor",
-        frozenset(["Lisinopril", "Amoxicillin"]): "Minor",
-        frozenset(["Metoprolol", "Amoxicillin"]): "Minor",
-    }
-
-    pair = frozenset([drug_a, drug_b])
-    severity = INTERACTIONS.get(pair, rng.choice(["Minor", "Moderate", "High Risk"]))
-
-    # --- confidence (higher when severity is more dangerous) -------------
-    base = {"Critical": 95, "High Risk": 91, "Moderate": 87, "Minor": 84}[severity]
-    confidence = round(base + rng.uniform(0, 5), 1)
-    confidence = min(confidence, 99.0)
-
-    # --- molecular reason ------------------------------------------------
-    REASONS = {
-        "Critical": [
-            f"{drug_a} inhibits CYP3A4-mediated metabolism of {drug_b}, "
-            "leading to dangerously elevated plasma concentrations and "
-            "increased risk of haemorrhage.",
-            f"{drug_a} and {drug_b} both competitively bind to CYP2C9, "
-            "causing synergistic anticoagulant effects and elevated INR.",
-        ],
-        "High Risk": [
-            f"Co-administration significantly alters {drug_b} pharmacokinetics, "
-            "increasing the risk of adverse cardiovascular events.",
-            f"{drug_a} strongly induces CYP2D6, potentially causing rapid "
-            "depletion of {drug_b} active metabolites.",
-        ],
-        "Moderate": [
-            f"{drug_a} moderately induces CYP2D6, reducing the efficacy "
-            f"of {drug_b}. Dose adjustment may be required.",
-            f"Co-administration may decrease {drug_b} absorption via "
-            "P-glycoprotein efflux modulation in the GI tract.",
-        ],
-        "Minor": [
-            f"No significant cytochrome P450 overlap detected between "
-            f"{drug_a} and {drug_b}. Interaction risk is minimal.",
-            f"{drug_a} and {drug_b} are metabolised via independent "
-            "pathways (CYP1A2 and UGT1A1 respectively). Safe to co-prescribe.",
-        ],
-    }
-
-    reason = rng.choice(REASONS[severity])
-
-    # --- adjustments
-    age = patient_data.get("age", 30)
-    pregnancy = patient_data.get("pregnancy", False)
-    notes = []
-    if age >= 65:
-        notes.append("⚠️ Elderly patient — hepatic clearance may be reduced.")
-    if pregnancy:
-        notes.append("⚠️ Pregnancy detected — FDA category risk applies.")
-
+    """Fetch interaction prediction from the Flask backend ML model."""
+    try:
+        response = requests.post(
+            "http://127.0.0.1:5000/predict",
+            json={
+                "drugs": [drug_a, drug_b],
+                "patient": patient_data
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data and len(data) > 0:
+                res = data[0]
+                return {
+                    "severity": res.get("final_severity", "Unknown"),
+                    "confidence": round(res.get("confidence", 0.0) * 100, 1),
+                    "reason": " \n".join(res.get("patient_factors", [])),
+                    "ai_severity": res.get("ai_severity", "Unknown"),
+                    "patient_notes": res.get("patient_factors", [])
+                }
+    except Exception as e:
+        st.error(f"Error connecting to ML backend: {e}")
+    
+    # Fallback if API fails
     return {
-        "severity": severity,
-        "confidence": confidence,
-        "reason": reason,
-        "patient_notes": notes,
+        "severity": "Unknown",
+        "confidence": 0.0,
+        "reason": "Backend prediction service unavailable.",
+        "ai_severity": "Unknown",
+        "patient_notes": []
     }
 
 
@@ -484,28 +438,39 @@ with st.sidebar:
         st.markdown("### 🏥 Patient Context")
 
         age = st.slider(
-            "Age (years)",
+            "Patient Age",
             min_value=0,
             max_value=120,
             value=30,
             help="Patient's age in years",
         )
 
-        weight = st.number_input(
-            "Weight (kg)",
-            min_value=0.0,
-            max_value=300.0,
-            value=70.0,
-            step=0.5,
-            format="%.1f",
-            help="Patient's weight in kilograms",
-        )
+        gender = st.radio("Gender", ["Male", "Female", "Other"], horizontal=True)
+        
+        renal = st.select_slider("Renal Function", ["Failure", "Impaired", "Normal"], "Normal")
+        liver = st.selectbox("Liver Status", ["Healthy", "Compromised"])
 
-        pregnancy = st.toggle(
-            "Pregnancy Status",
-            value=False,
-            help="Toggle ON if the patient is pregnant",
-        )
+        pregnancy = False
+        if gender == "Female":
+            pregnancy = st.toggle("Is Pregnant?", value=False)
+
+        st.markdown("---")
+        st.markdown("### ⚕️ Medical History")
+        
+        diabetes = st.checkbox("Diabetes")
+        asthma = st.checkbox("Asthma / COPD")
+        heart = st.checkbox("Heart Condition")
+        
+        # Package patient data for backend API
+        patient_data = {
+            "age": age,
+            "is_pregnant": pregnancy,
+            "diabetes": diabetes,
+            "asthma": asthma,
+            "heart": heart,
+            "renal": renal,
+            "liver": liver
+        }
 
         st.markdown("---")
     else:
@@ -661,7 +626,7 @@ else:
         if len(unique_drugs) < 2:
             st.warning("⚠️ Please select at least two **different** drugs for analysis.")
         else:
-            patient_data = {"age": age, "weight": weight, "pregnancy": pregnancy}
+            # patient_data is already defined in the sidebar section
             drug_pairs = list(combinations(unique_drugs, 2))
 
             st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
@@ -671,14 +636,19 @@ else:
             )
             st.caption(f"Analyzing **{len(drug_pairs)}** drug pair(s) from **{len(unique_drugs)}** selected drugs.")
 
-            for pair_idx, (drug_a, drug_b) in enumerate(drug_pairs):
-                #mock prediction
-                result = predict_interaction(drug_a, drug_b, patient_data)
+            all_results = []
 
-                severity = result["severity"]
-                confidence = result["confidence"]
-                reason = result["reason"]
-                patient_notes = result["patient_notes"]
+            for pair_idx, (drug_a, drug_b) in enumerate(drug_pairs):
+                # ML API prediction
+                result = predict_interaction(drug_a, drug_b, patient_data)
+                result['pair'] = (drug_a, drug_b)
+                all_results.append(result)
+
+                severity = result.get("severity", "Unknown")
+                confidence = result.get("confidence", 0.0)
+                reason = result.get("reason", "No detailed interaction reasons provided.")
+                patient_notes = result.get("patient_notes", [])
+                ai_severity = result.get("ai_severity", "Unknown")
 
                 st.markdown(f"### 💊 {drug_a}  ↔  {drug_b}")
 
@@ -694,7 +664,7 @@ else:
                         <div class="report-header">
                             <h3>📋 Interaction Report</h3>
                             <p class="meta">{drugs_label}</p>
-                            <p class="meta"><b>Patient:</b> {age} yrs, {weight} kg {'&nbsp;· Pregnant' if pregnancy else ''}</p>
+                            <p class="meta"><b>Patient:</b> {age} yrs, {gender} &nbsp;·&nbsp; Renal: {renal} &nbsp;·&nbsp; Liver: {liver}</p>
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -819,19 +789,13 @@ else:
                         '<p class="section-title">🚨 Emergency Escalation</p>',
                         unsafe_allow_html=True,
                     )
-                    esc_col1, esc_col2 = st.columns(2, gap="medium")
+                    esc_col1, _ = st.columns(2, gap="medium")
                     with esc_col1:
                         fda_btn = st.button(
                             "🛑  View FDA Warning & Alternatives",
                             use_container_width=True,
                             type="primary",
                             key=f"fda_{pair_idx}",
-                        )
-                    with esc_col2:
-                        pdf_btn = st.button(
-                            "📄  Generate Safety Report (PDF)",
-                            use_container_width=True,
-                            key=f"pdf_red_{pair_idx}",
                         )
 
                     if fda_btn:
@@ -855,35 +819,24 @@ else:
                             for alt in alt_b:
                                 st.success(f"✅ **{alt['name']}** — {alt['note']}")
 
-                    if pdf_btn:
-                        st.toast("📄 Clinical Safety Report generated!", icon="✅")
-                        st.success(
-                            "✅ **Report generated and downloaded.** "
-                            "The PDF contains the full interaction analysis, LLM summary, "
-                            "and suggested clinical actions."
-                        )
-
-                else:
-                    # Non-red: only show export button
-                    st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
-                    exp_col, _ = st.columns([1, 2])
-                    with exp_col:
-                        pdf_btn_safe = st.button(
-                            "📄  Generate Safety Report (PDF)",
-                            use_container_width=True,
-                            key=f"pdf_safe_{pair_idx}",
-                        )
-                    if pdf_btn_safe:
-                        st.toast("📄 Clinical Safety Report generated!", icon="✅")
-                        st.success(
-                            "✅ **Report generated and downloaded.** "
-                            "The PDF contains the full interaction analysis, LLM summary, "
-                            "and suggested clinical actions."
-                        )
 
                 # Divider between pairs
                 if pair_idx < len(drug_pairs) - 1:
                     st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
+
+            st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
+            
+            # Prepare PDF bytes from all results
+            pdf_bytes = generate_safety_report(patient_data, all_results)
+            
+            st.download_button(
+                label="📄  Generate Full Safety Report (PDF)",
+                data=pdf_bytes,
+                file_name=f"MedGuard_Safety_Report_{time.strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
 
 
 # ══════════════════════════════════════════════

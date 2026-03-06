@@ -4,6 +4,8 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 model = joblib.load("astarva_model.pkl")
+# Set device to CPU for thread-safe inference in the Flask server
+model.set_params(device='cpu')
 le = joblib.load("label_encoder.pkl")
 
 

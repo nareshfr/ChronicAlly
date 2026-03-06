@@ -23,6 +23,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+import requests
 
 
 # ══════════════════════════════════════════════
@@ -45,6 +46,16 @@ def _load_dataset() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def _get_drug_names(df: pd.DataFrame) -> list[str]:
     names = set(df["Drug 1"].tolist() + df["Drug 2"].tolist())
+    
+    # Also include mapped drugs from smiles_mapping.csv so the chatbot recognizes them
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        mapping = pd.read_csv(os.path.join(base, "smiles_mapping.csv"))
+        mapped_names = mapping["drug_name"].dropna().tolist()
+        names.update(mapped_names)
+    except Exception:
+        pass
+        
     return sorted(names)
 
 
@@ -139,8 +150,45 @@ def _classify_severity(description: str) -> str:
 
 
 def tool_assess_severity(drug_a: str, drug_b: str) -> ToolResult:
-    """Assess the risk/severity level of combining two drugs."""
+    """Assess the risk/severity level of combining two drugs using the ML model."""
     a, b = drug_a.lower(), drug_b.lower()
+    
+    # Default patient profile for the chatbot (average healthy adult)
+    default_patient = {
+        "age": 30,
+        "is_pregnant": False,
+        "diabetes": False,
+        "asthma": False,
+        "heart": False,
+        "renal": "Normal",
+        "liver": "Healthy"
+    }
+
+    try:
+        response = requests.post(
+            "http://127.0.0.1:5000/predict",
+            json={"drugs": [drug_a, drug_b], "patient": default_patient},
+            timeout=5
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data and len(data) > 0:
+                res = data[0]
+                return ToolResult(
+                    tool_name="assess_severity",
+                    success=True,
+                    data={
+                        "drug_a": drug_a, 
+                        "drug_b": drug_b,
+                        "severity": res.get("final_severity", "Unknown"),
+                        "description": " \n".join(res.get("patient_factors", ["Standard AI risk assessment."])),
+                    },
+                    summary=f"ML Model assessed {drug_a} + {drug_b} → {res.get('final_severity', 'Unknown')}."
+                )
+    except Exception:
+        pass # Fallback to CSV if the API is down
+
+    # Fallback to CSV rules
     mask = (
         ((_DF["drug1_lower"] == a) & (_DF["drug2_lower"] == b))
         | ((_DF["drug1_lower"] == b) & (_DF["drug2_lower"] == a))
@@ -162,7 +210,7 @@ def tool_assess_severity(drug_a: str, drug_b: str) -> ToolResult:
             "severity": severity,
             "description": descriptions[0],
         },
-        summary=f"{drug_a} + {drug_b} → {severity}.",
+        summary=f"Rule-based assessment for {drug_a} + {drug_b} → {severity}.",
     )
 
 

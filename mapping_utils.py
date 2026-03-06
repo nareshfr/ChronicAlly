@@ -18,12 +18,14 @@ else:
 
     # 3. Mapping loop
     smiles_data = []
-    # We'll start with a test batch of 20 to make sure it works
-    test_limit = 20 
+    key_drugs = ["Aspirin", "Warfarin", "Ibuprofen", "Metformin", "Lisinopril",
+                 "Amoxicillin", "Omeprazole", "Atorvastatin", "Ciprofloxacin", "Metoprolol"]
     
-    print(f"Starting lookup for first {test_limit} drugs...")
+    drugs_to_map = list(set(key_drugs + list(unique_drugs[:30])))
     
-    for i, name in enumerate(unique_drugs[:test_limit]): 
+    print(f"Starting lookup for {len(drugs_to_map)} drugs...")
+    
+    for i, name in enumerate(drugs_to_map): 
         try:
             # Search PubChem by name
             compounds = pcp.get_compounds(name, 'name')

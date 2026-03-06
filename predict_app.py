@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # 1. LOAD THE TRAINED COMPONENTS
-print("Loading ASTARVA 2026 Engine...")
+print("Loading Engine...")
 model = joblib.load("ChronicAlly/astarva_model.pkl")
 le = joblib.load("ChronicAlly/label_encoder.pkl")
 smiles_df = pd.read_csv("ChronicAlly/smiles_mapping.csv")

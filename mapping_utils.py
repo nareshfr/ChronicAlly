@@ -1,8 +1,7 @@
 import pandas as pd
-import numpy as np
-from rdkit import Chem
-from rdkit.Chem import AllChem
-import xgboost as xgb
+# import numpy as np
+# from rdkit import Chem
+# from rdkit.Chem import AllChem
 import os
 import time 
 import pubchempy as pcp

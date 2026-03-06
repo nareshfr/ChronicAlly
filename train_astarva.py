@@ -83,5 +83,4 @@ acc = accuracy_score(y_test, y_pred)
 # 9. SAVE
 joblib.dump(model, "astarva_model.pkl")
 joblib.dump(le, "label_encoder.pkl")
-print(f"\nSUCCESS! Model saved.")
 print(f"Final Accuracy: {acc*100:.2f}%")

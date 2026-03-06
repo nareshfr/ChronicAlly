@@ -1,6 +1,8 @@
 import streamlit as st
 import random
 import textwrap
+from itertools import combinations
+from chatbot import render_chatbot
 
 
 st.set_page_config(
@@ -282,41 +284,47 @@ def predict_interaction(
 
     # --- severity buckets ------------------------------------------------
     INTERACTIONS: dict[frozenset, str] = {
-        frozenset(["Aspirin", "Warfarin"]): "Red",
-        frozenset(["Ibuprofen", "Warfarin"]): "Red",
-        frozenset(["Ciprofloxacin", "Warfarin"]): "Red",
-        frozenset(["Aspirin", "Ibuprofen"]): "Yellow",
-        frozenset(["Metformin", "Ciprofloxacin"]): "Yellow",
-        frozenset(["Atorvastatin", "Omeprazole"]): "Yellow",
-        frozenset(["Omeprazole", "Metformin"]): "Green",
-        frozenset(["Lisinopril", "Amoxicillin"]): "Green",
-        frozenset(["Metoprolol", "Amoxicillin"]): "Green",
+        frozenset(["Aspirin", "Warfarin"]): "Critical",
+        frozenset(["Ibuprofen", "Warfarin"]): "Critical",
+        frozenset(["Ciprofloxacin", "Warfarin"]): "High Risk",
+        frozenset(["Aspirin", "Ibuprofen"]): "Moderate",
+        frozenset(["Metformin", "Ciprofloxacin"]): "Moderate",
+        frozenset(["Atorvastatin", "Omeprazole"]): "Moderate",
+        frozenset(["Omeprazole", "Metformin"]): "Minor",
+        frozenset(["Lisinopril", "Amoxicillin"]): "Minor",
+        frozenset(["Metoprolol", "Amoxicillin"]): "Minor",
     }
 
     pair = frozenset([drug_a, drug_b])
-    severity = INTERACTIONS.get(pair, rng.choice(["Green", "Yellow", "Red"]))
+    severity = INTERACTIONS.get(pair, rng.choice(["Minor", "Moderate", "High Risk"]))
 
     # --- confidence (higher when severity is more dangerous) -------------
-    base = {"Red": 93, "Yellow": 89, "Green": 86}[severity]
-    confidence = round(base + rng.uniform(0, 6), 1)
+    base = {"Critical": 95, "High Risk": 91, "Moderate": 87, "Minor": 84}[severity]
+    confidence = round(base + rng.uniform(0, 5), 1)
     confidence = min(confidence, 99.0)
 
     # --- molecular reason ------------------------------------------------
     REASONS = {
-        "Red": [
+        "Critical": [
             f"{drug_a} inhibits CYP3A4-mediated metabolism of {drug_b}, "
             "leading to dangerously elevated plasma concentrations and "
             "increased risk of haemorrhage.",
             f"{drug_a} and {drug_b} both competitively bind to CYP2C9, "
             "causing synergistic anticoagulant effects and elevated INR.",
         ],
-        "Yellow": [
+        "High Risk": [
+            f"Co-administration significantly alters {drug_b} pharmacokinetics, "
+            "increasing the risk of adverse cardiovascular events.",
+            f"{drug_a} strongly induces CYP2D6, potentially causing rapid "
+            "depletion of {drug_b} active metabolites.",
+        ],
+        "Moderate": [
             f"{drug_a} moderately induces CYP2D6, reducing the efficacy "
             f"of {drug_b}. Dose adjustment may be required.",
             f"Co-administration may decrease {drug_b} absorption via "
             "P-glycoprotein efflux modulation in the GI tract.",
         ],
-        "Green": [
+        "Minor": [
             f"No significant cytochrome P450 overlap detected between "
             f"{drug_a} and {drug_b}. Interaction risk is minimal.",
             f"{drug_a} and {drug_b} are metabolised via independent "
@@ -368,19 +376,25 @@ def generate_llm_summary(technical_report: dict) -> str:
     confidence = technical_report["confidence"]
 
     RISK_SUMMARIES = {
-        "Red": (
-            f"**High-Risk Interaction** — Co-administering **{drug_a}** and "
-            f"**{drug_b}** poses a **serious clinical risk**. "
+        "Critical": (
+            f"**Critical Interaction** — Co-administering **{drug_a}** and "
+            f"**{drug_b}** poses a **severe clinical risk**. "
             f"The AI model flagged this with {confidence}% confidence. "
             "Immediate pharmacist review is strongly recommended before dispensing."
         ),
-        "Yellow": (
+        "High Risk": (
+            f"**High-Risk Interaction** — Co-administering **{drug_a}** and "
+            f"**{drug_b}** poses a **serious clinical risk**. "
+            f"The AI model flagged this with {confidence}% confidence. "
+            "Pharmacist review is recommended before dispensing."
+        ),
+        "Moderate": (
             f"**Moderate-Risk Interaction** — Combining **{drug_a}** and "
             f"**{drug_b}** may lead to altered drug efficacy or mild adverse "
             f"effects (confidence: {confidence}%). "
             "Clinical monitoring and potential dose adjustment are advised."
         ),
-        "Green": (
+        "Minor": (
             f"**Low-Risk Interaction** — **{drug_a}** and **{drug_b}** appear "
             f"to be safe for concurrent use (confidence: {confidence}%). "
             "No significant pharmacokinetic or pharmacodynamic conflicts detected."
@@ -388,19 +402,25 @@ def generate_llm_summary(technical_report: dict) -> str:
     }
 
     SUGGESTED_ACTIONS = {
-        "Red": (
+        "Critical": (
             "1. **Do not dispense** without physician confirmation.\n"
             "2. Consider alternative medications (see Escalation section below).\n"
             "3. Document the interaction flag in the patient's medical record.\n"
             "4. Monitor INR / relevant biomarkers if co-prescription proceeds."
         ),
-        "Yellow": (
+        "High Risk": (
+            "1. **Review carefully** before dispensing.\n"
+            "2. Consider alternative medications if suitable.\n"
+            "3. Document the interaction flag in the patient's medical record.\n"
+            "4. Schedule a follow-up to monitor for adverse effects."
+        ),
+        "Moderate": (
             "1. **Proceed with caution** — inform the prescribing physician.\n"
             "2. Adjust dosage if clinically appropriate.\n"
             "3. Schedule a follow-up in 48–72 hours to reassess tolerance.\n"
             "4. Educate the patient on early warning signs to report."
         ),
-        "Green": (
+        "Minor": (
             "1. **Safe to dispense** under standard protocols.\n"
             "2. No special monitoring required beyond routine care.\n"
             "3. Reassess if additional drugs are added to the regimen."
@@ -444,48 +464,67 @@ ALTERNATIVE_DRUGS: dict[str, list[dict]] = {
 # SIDEBAR
 
 with st.sidebar:
-    st.markdown("## 🏥 Patient Context")
+    st.markdown("## 🏥 MedGuard AI")
     st.markdown(
         '<span class="sidebar-badge">ASTRAVA 2026</span>',
         unsafe_allow_html=True,
     )
     st.markdown("---")
 
-    age = st.slider(
-        "Age (years)",
-        min_value=0,
-        max_value=120,
-        value=30,
-        help="Patient's age in years",
+    # ── Page Navigation ──
+    page = st.radio(
+        "Navigate",
+        ["🔍 Drug Analyzer", "💬 AI Chatbot"],
+        index=0,
+        help="Switch between the Drug Interaction Analyzer and the AI Chatbot",
     )
-
-    weight = st.number_input(
-        "Weight (kg)",
-        min_value=0.0,
-        max_value=300.0,
-        value=70.0,
-        step=0.5,
-        format="%.1f",
-        help="Patient's weight in kilograms",
-    )
-
-    pregnancy = st.toggle(
-        "Pregnancy Status",
-        value=False,
-        help="Toggle ON if the patient is pregnant",
-    )
-
     st.markdown("---")
-    
+
+    if page == "🔍 Drug Analyzer":
+        st.markdown("### 🏥 Patient Context")
+
+        age = st.slider(
+            "Age (years)",
+            min_value=0,
+            max_value=120,
+            value=30,
+            help="Patient's age in years",
+        )
+
+        weight = st.number_input(
+            "Weight (kg)",
+            min_value=0.0,
+            max_value=300.0,
+            value=70.0,
+            step=0.5,
+            format="%.1f",
+            help="Patient's weight in kilograms",
+        )
+
+        pregnancy = st.toggle(
+            "Pregnancy Status",
+            value=False,
+            help="Toggle ON if the patient is pregnant",
+        )
+
+        st.markdown("---")
+    else:
+        st.markdown("**Quick Prompts:**")
+        st.caption('• "What happens if I take Aspirin with Warfarin?"')
+        st.caption('• "Tell me about Digoxin"')
+        st.caption('• "Is Metoprolol and Digoxin dangerous?"')
+        st.caption('• "Alternatives to Ciprofloxacin"')
+        st.markdown("---")
+
     # ── Theme Toggle ──
     st.markdown("<p style='font-size:0.85rem; font-weight:600; color:rgba(128,128,128,0.8); margin-bottom:0.5rem;'>APPEARANCE</p>", unsafe_allow_html=True)
-    
+
     def toggle_theme():
         if st.session_state.theme == "Dark Mode":
             st.session_state.theme = "Light Mode"
         else:
             st.session_state.theme = "Dark Mode"
-            
+
     theme_icon = "☀️ Switch to Light Mode" if st.session_state.theme == "Dark Mode" else "🌙 Switch to Dark Mode"
     st.button(theme_icon, on_click=toggle_theme, use_container_width=True)
 
@@ -564,247 +603,287 @@ elif st.session_state.theme == "Dark Mode":
 
 # MAIN AREA
 
-#Header
-st.markdown(
-    """
-    <div class="main-header">
-        <h1>🩺 MedGuard AI</h1>
-        <p class="subtitle">Intelligent Drug Interaction Analyzer</p>
-        <span class="badge">✦ Hackathon Prototype · ASTRAVA 2026</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+if page == "💬 AI Chatbot":
+    # ── Render the NLP Chatbot ──
+    render_chatbot()
 
-#Drug Selection 
-st.markdown('<p class="section-title">💊 Drug Selection</p>', unsafe_allow_html=True)
-
-col_a, col_b = st.columns(2, gap="medium")
-
-with col_a:
-    drug_a = st.selectbox(
-        "Drug A",
-        options=DRUG_LIST,
-        index=0,
-        help="Search or select the first drug",
+else:
+    #Header
+    st.markdown(
+        """
+        <div class="main-header">
+            <h1>🩺 MedGuard AI</h1>
+            <p class="subtitle">Intelligent Drug Interaction Analyzer</p>
+            <span class="badge">✦ Hackathon Prototype · ASTRAVA 2026</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-with col_b:
-    drug_b = st.selectbox(
-        "Drug B",
-        options=DRUG_LIST,
-        index=1,
-        help="Search or select the second drug",
+    #Drug Selection 
+    st.markdown('<p class="section-title">💊 Drug Selection</p>', unsafe_allow_html=True)
+
+    num_drugs = st.number_input(
+        "Enter the no. of drugs",
+        min_value=2,
+        max_value=10,
+        value=2,
+        step=1,
+        help="Enter the number of drugs about to be consumed",
     )
 
-st.markdown("")  # spacing
+    selected_drugs: list[str] = []
+    drug_cols = st.columns(min(int(num_drugs), 3), gap="medium")
 
-_left, center, _right = st.columns([1.2, 1, 1.2])
-with center:
-    analyze = st.button("🔍  Analyze Interaction", use_container_width=True)
-
-
-# RESULT DASHBOARD
-if analyze:
-    if drug_a == drug_b:
-        st.warning("⚠️ Please select two **different** drugs for analysis.")
-    else:
-        #mock prediction
-        patient_data = {"age": age, "weight": weight, "pregnancy": pregnancy}
-        result = predict_interaction(drug_a, drug_b, patient_data)
-
-        severity = result["severity"]
-        confidence = result["confidence"]
-        reason = result["reason"]
-        patient_notes = result["patient_notes"]
-
-        st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="section-title">📋 Analysis Results</p>',
-            unsafe_allow_html=True,
-        )
-
-        # ── Report Header + Confidence (side by side) ──
-        rpt_col, conf_col = st.columns([2.5, 1], gap="medium")
-
-        with rpt_col:
-            st.markdown(
-                f"""
-                <div class="report-header">
-                    <h3>📋 Interaction Report</h3>
-                    <p class="meta"><b>Drug A:</b> {drug_a} &nbsp;&nbsp;·&nbsp;&nbsp; <b>Drug B:</b> {drug_b}</p>
-                    <p class="meta"><b>Patient:</b> {age} yrs, {weight} kg {'&nbsp;· Pregnant' if pregnancy else ''}</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
+    for i in range(int(num_drugs)):
+        col = drug_cols[i % min(int(num_drugs), 3)]
+        with col:
+            default_index = i if i < len(DRUG_LIST) else 0
+            drug = st.selectbox(
+                f"Drug {i + 1}",
+                options=DRUG_LIST,
+                index=default_index,
+                help=f"Search or select drug {i + 1}",
+                key=f"drug_{i}",
             )
+            selected_drugs.append(drug)
 
-        with conf_col:
-            st.metric(
-                label="🤖 AI Confidence",
-                value=f"{confidence}%",
-                delta="High" if confidence >= 92 else "Moderate",
-                delta_color="normal" if confidence >= 92 else "off",
-            )
+    st.markdown("")  # spacing
 
-        #Risk Level 
-        SEVERITY_CONFIG = {
-            "Red": {
-                "icon": "🔴",
-                "label": "MAJOR INTERACTION DETECTED",
-                "fn": st.error,
-            },
-            "Yellow": {
-                "icon": "🟡",
-                "label": "MODERATE INTERACTION — USE CAUTION",
-                "fn": st.warning,
-            },
-            "Green": {
-                "icon": "🟢",
-                "label": "LOW RISK — GENERALLY SAFE",
-                "fn": st.success,
-            },
-        }
-        cfg = SEVERITY_CONFIG[severity]
-        cfg["fn"](f"**{cfg['icon']} {cfg['label']}**")
+    _left, center, _right = st.columns([1.2, 1, 1.2])
+    with center:
+        analyze = st.button("🔍  Analyze Interaction", use_container_width=True)
 
-        #Patient-specific alerts
-        for note in patient_notes:
-            st.info(note)
 
-        #LLM Clinical Summary
-        st.markdown(
-            '<p class="section-title">🧠 AI Clinical Summary</p>',
-            unsafe_allow_html=True,
-        )
-        llm_input = {
-            "severity": severity,
-            "confidence": confidence,
-            "reason": reason,
-            "drug_a": drug_a,
-            "drug_b": drug_b,
-        }
-        llm_summary = generate_llm_summary(llm_input)
-        st.markdown(llm_summary)
-
-        #Molecular Fingerprint Analysis (XAI)
-        with st.expander("🔬 View Molecular Fingerprint Analysis (XAI)", expanded=False):
-            st.markdown("#### Pathway Interaction Detail")
-            st.markdown(reason)
-
-            st.markdown("---")
-            st.markdown("#### Enzyme Affinity Map (Mock)")
-
-            ENZYME_DATA = {
-                "Red": {
-                    "CYP3A4": 0.92,
-                    "CYP2C9": 0.85,
-                    "CYP2D6": 0.40,
-                    "CYP1A2": 0.15,
-                    "P-gp": 0.60,
-                },
-                "Yellow": {
-                    "CYP3A4": 0.55,
-                    "CYP2C9": 0.45,
-                    "CYP2D6": 0.70,
-                    "CYP1A2": 0.30,
-                    "P-gp": 0.50,
-                },
-                "Green": {
-                    "CYP3A4": 0.20,
-                    "CYP2C9": 0.15,
-                    "CYP2D6": 0.10,
-                    "CYP1A2": 0.55,
-                    "UGT1A1": 0.45,
-                },
-            }
-
-            enzymes = ENZYME_DATA[severity]
-            enzyme_cols = st.columns(len(enzymes))
-            for col, (enzyme, affinity) in zip(enzyme_cols, enzymes.items()):
-                with col:
-                    bar_color = (
-                        "🔴" if affinity >= 0.75
-                        else "🟡" if affinity >= 0.45
-                        else "🟢"
-                    )
-                    st.markdown(f"**{enzyme}**")
-                    st.progress(affinity)
-                    st.caption(f"{bar_color} {affinity:.0%}")
-
-            st.markdown("---")
-            st.caption(
-                "ℹ️ Mock model for demonstration. In production, molecular "
-                "fingerprints (ECFP4/MACCS) would be compared against a trained "
-                "GNN or transformer-based interaction model."
-            )
-
-        #Emergency Escalation (Red severity only)
-        if severity == "Red":
-            st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
-            st.markdown(
-                '<p class="section-title">🚨 Emergency Escalation</p>',
-                unsafe_allow_html=True,
-            )
-            esc_col1, esc_col2 = st.columns(2, gap="medium")
-            with esc_col1:
-                fda_btn = st.button(
-                    "🛑  View FDA Warning & Alternatives",
-                    use_container_width=True,
-                    type="primary",
-                )
-            with esc_col2:
-                pdf_btn = st.button(
-                    "📄  Generate Safety Report (PDF)",
-                    use_container_width=True,
-                )
-
-            if fda_btn:
-                st.markdown("#### ⚠️ FDA Interaction Warning")
-                st.error(
-                    f"The FDA has documented significant adverse events when "
-                    f"**{drug_a}** and **{drug_b}** are co-prescribed. "
-                    f"Review the alternatives below before dispensing."
-                )
-                st.markdown("#### 💊 Recommended Alternatives")
-                alt_a = ALTERNATIVE_DRUGS.get(drug_a, [{"name": "Consult formulary", "note": "No pre-loaded alternatives"}])
-                alt_b = ALTERNATIVE_DRUGS.get(drug_b, [{"name": "Consult formulary", "note": "No pre-loaded alternatives"}])
-
-                alt_col1, alt_col2 = st.columns(2, gap="medium")
-                with alt_col1:
-                    st.markdown(f"**Instead of {drug_a}:**")
-                    for alt in alt_a:
-                        st.success(f"✅ **{alt['name']}** — {alt['note']}")
-                with alt_col2:
-                    st.markdown(f"**Instead of {drug_b}:**")
-                    for alt in alt_b:
-                        st.success(f"✅ **{alt['name']}** — {alt['note']}")
-
-            if pdf_btn:
-                st.toast("📄 Clinical Safety Report generated!", icon="✅")
-                st.success(
-                    "✅ **Report generated and downloaded.** "
-                    "The PDF contains the full interaction analysis, LLM summary, "
-                    "and suggested clinical actions."
-                )
-
+    # RESULT DASHBOARD
+    if analyze:
+        unique_drugs = list(dict.fromkeys(selected_drugs))  # preserve order, remove dupes
+        if len(unique_drugs) < 2:
+            st.warning("⚠️ Please select at least two **different** drugs for analysis.")
         else:
-            # Non-red: only show export button
+            patient_data = {"age": age, "weight": weight, "pregnancy": pregnancy}
+            drug_pairs = list(combinations(unique_drugs, 2))
+
             st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
-            exp_col, _ = st.columns([1, 2])
-            with exp_col:
-                pdf_btn_safe = st.button(
-                    "📄  Generate Safety Report (PDF)",
-                    use_container_width=True,
-                    key="pdf_safe",
+            st.markdown(
+                '<p class="section-title">📋 Analysis Results</p>',
+                unsafe_allow_html=True,
+            )
+            st.caption(f"Analyzing **{len(drug_pairs)}** drug pair(s) from **{len(unique_drugs)}** selected drugs.")
+
+            for pair_idx, (drug_a, drug_b) in enumerate(drug_pairs):
+                #mock prediction
+                result = predict_interaction(drug_a, drug_b, patient_data)
+
+                severity = result["severity"]
+                confidence = result["confidence"]
+                reason = result["reason"]
+                patient_notes = result["patient_notes"]
+
+                st.markdown(f"### 💊 {drug_a}  ↔  {drug_b}")
+
+                # ── Report Header + Confidence (side by side) ──
+                rpt_col, conf_col = st.columns([2.5, 1], gap="medium")
+
+                with rpt_col:
+                    drugs_label = ' &nbsp;&nbsp;·&nbsp;&nbsp; '.join(
+                        f'<b>Drug {chr(65+j)}:</b> {d}' for j, d in enumerate([drug_a, drug_b])
+                    )
+                    st.markdown(
+                        f"""
+                        <div class="report-header">
+                            <h3>📋 Interaction Report</h3>
+                            <p class="meta">{drugs_label}</p>
+                            <p class="meta"><b>Patient:</b> {age} yrs, {weight} kg {'&nbsp;· Pregnant' if pregnancy else ''}</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                with conf_col:
+                    st.metric(
+                        label="🤖 AI Confidence",
+                        value=f"{confidence}%",
+                        delta="High" if confidence >= 92 else "Moderate",
+                        delta_color="normal" if confidence >= 92 else "off",
+                    )
+
+                #Risk Level
+                SEVERITY_CONFIG = {
+                    "Critical": {
+                        "icon": "🔴",
+                        "label": "CRITICAL INTERACTION DETECTED",
+                        "fn": st.error,
+                    },
+                    "High Risk": {
+                        "icon": "🟠",
+                        "label": "HIGH RISK INTERACTION",
+                        "fn": st.warning,
+                    },
+                    "Moderate": {
+                        "icon": "🟡",
+                        "label": "MODERATE INTERACTION — USE CAUTION",
+                        "fn": st.warning,
+                    },
+                    "Minor": {
+                        "icon": "🟢",
+                        "label": "LOW RISK — GENERALLY SAFE",
+                        "fn": st.success,
+                    },
+                }
+                cfg = SEVERITY_CONFIG[severity]
+                cfg["fn"](f"**{cfg['icon']} {cfg['label']}**")
+
+                #Patient-specific alerts
+                for note in patient_notes:
+                    st.info(note)
+
+                #LLM Clinical Summary
+                st.markdown(
+                    '<p class="section-title">🧠 AI Clinical Summary</p>',
+                    unsafe_allow_html=True,
                 )
-            if pdf_btn_safe:
-                st.toast("📄 Clinical Safety Report generated!", icon="✅")
-                st.success(
-                    "✅ **Report generated and downloaded.** "
-                    "The PDF contains the full interaction analysis, LLM summary, "
-                    "and suggested clinical actions."
-                )
+                llm_input = {
+                    "severity": severity,
+                    "confidence": confidence,
+                    "reason": reason,
+                    "drug_a": drug_a,
+                    "drug_b": drug_b,
+                }
+                llm_summary = generate_llm_summary(llm_input)
+                st.markdown(llm_summary)
+
+                #Molecular Fingerprint Analysis (XAI)
+                with st.expander(f"🔬 View Molecular Fingerprint Analysis — {drug_a} ↔ {drug_b}", expanded=False):
+                    st.markdown("#### Pathway Interaction Detail")
+                    st.markdown(reason)
+
+                    st.markdown("---")
+                    st.markdown("#### Enzyme Affinity Map (Mock)")
+
+                    ENZYME_DATA = {
+                        "Critical": {
+                            "CYP3A4": 0.92,
+                            "CYP2C9": 0.85,
+                            "CYP2D6": 0.40,
+                            "CYP1A2": 0.15,
+                            "P-gp": 0.60,
+                        },
+                        "High Risk": {
+                            "CYP3A4": 0.70,
+                            "CYP2C9": 0.65,
+                            "CYP2D6": 0.80,
+                            "CYP1A2": 0.20,
+                            "P-gp": 0.55,
+                        },
+                        "Moderate": {
+                            "CYP3A4": 0.55,
+                            "CYP2C9": 0.45,
+                            "CYP2D6": 0.70,
+                            "CYP1A2": 0.30,
+                            "P-gp": 0.50,
+                        },
+                        "Minor": {
+                            "CYP3A4": 0.20,
+                            "CYP2C9": 0.15,
+                            "CYP2D6": 0.10,
+                            "CYP1A2": 0.55,
+                            "UGT1A1": 0.45,
+                        },
+                    }
+
+                    enzymes = ENZYME_DATA[severity]
+                    enzyme_cols = st.columns(len(enzymes))
+                    for col, (enzyme, affinity) in zip(enzyme_cols, enzymes.items()):
+                        with col:
+                            bar_color = (
+                                "🔴" if affinity >= 0.75
+                                else "🟡" if affinity >= 0.45
+                                else "🟢"
+                            )
+                            st.markdown(f"**{enzyme}**")
+                            st.progress(affinity)
+                            st.caption(f"{bar_color} {affinity:.0%}")
+
+                    st.markdown("---")
+                    st.caption(
+                        "ℹ️ Mock model for demonstration. In production, molecular "
+                        "fingerprints (ECFP4/MACCS) would be compared against a trained "
+                        "GNN or transformer-based interaction model."
+                    )
+
+                #Emergency Escalation (Critical severity only)
+                if severity == "Critical":
+                    st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
+                    st.markdown(
+                        '<p class="section-title">🚨 Emergency Escalation</p>',
+                        unsafe_allow_html=True,
+                    )
+                    esc_col1, esc_col2 = st.columns(2, gap="medium")
+                    with esc_col1:
+                        fda_btn = st.button(
+                            "🛑  View FDA Warning & Alternatives",
+                            use_container_width=True,
+                            type="primary",
+                            key=f"fda_{pair_idx}",
+                        )
+                    with esc_col2:
+                        pdf_btn = st.button(
+                            "📄  Generate Safety Report (PDF)",
+                            use_container_width=True,
+                            key=f"pdf_red_{pair_idx}",
+                        )
+
+                    if fda_btn:
+                        st.markdown("#### ⚠️ FDA Interaction Warning")
+                        st.error(
+                            f"The FDA has documented significant adverse events when "
+                            f"**{drug_a}** and **{drug_b}** are co-prescribed. "
+                            f"Review the alternatives below before dispensing."
+                        )
+                        st.markdown("#### 💊 Recommended Alternatives")
+                        alt_a = ALTERNATIVE_DRUGS.get(drug_a, [{"name": "Consult formulary", "note": "No pre-loaded alternatives"}])
+                        alt_b = ALTERNATIVE_DRUGS.get(drug_b, [{"name": "Consult formulary", "note": "No pre-loaded alternatives"}])
+
+                        alt_col1, alt_col2 = st.columns(2, gap="medium")
+                        with alt_col1:
+                            st.markdown(f"**Instead of {drug_a}:**")
+                            for alt in alt_a:
+                                st.success(f"✅ **{alt['name']}** — {alt['note']}")
+                        with alt_col2:
+                            st.markdown(f"**Instead of {drug_b}:**")
+                            for alt in alt_b:
+                                st.success(f"✅ **{alt['name']}** — {alt['note']}")
+
+                    if pdf_btn:
+                        st.toast("📄 Clinical Safety Report generated!", icon="✅")
+                        st.success(
+                            "✅ **Report generated and downloaded.** "
+                            "The PDF contains the full interaction analysis, LLM summary, "
+                            "and suggested clinical actions."
+                        )
+
+                else:
+                    # Non-red: only show export button
+                    st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
+                    exp_col, _ = st.columns([1, 2])
+                    with exp_col:
+                        pdf_btn_safe = st.button(
+                            "📄  Generate Safety Report (PDF)",
+                            use_container_width=True,
+                            key=f"pdf_safe_{pair_idx}",
+                        )
+                    if pdf_btn_safe:
+                        st.toast("📄 Clinical Safety Report generated!", icon="✅")
+                        st.success(
+                            "✅ **Report generated and downloaded.** "
+                            "The PDF contains the full interaction analysis, LLM summary, "
+                            "and suggested clinical actions."
+                        )
+
+                # Divider between pairs
+                if pair_idx < len(drug_pairs) - 1:
+                    st.markdown('<hr class="clean-divider">', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════

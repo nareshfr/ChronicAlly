@@ -8,12 +8,12 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score
 import joblib
 
-# 1. LOAD DATA
+# 1. Load DATA
 print("Step 1: Loading data...")
 df = pd.read_csv("data/db_drug_interactions.csv")
 smiles_df = pd.read_csv("smiles_mapping.csv")
 
-# 2. IMPROVED SEVERITY EXTRACTOR (Detects more categories)
+# 2. IMPROVED Severity EXTRACTOR (Detects more categories)
 def encode_severity(text):
     text = str(text).lower()
     if any(w in text for w in ['fatal', 'contraindicated', 'severe risk']): return "Critical"
@@ -77,8 +77,11 @@ model = xgb.XGBClassifier(**params)
 model.fit(X_train, y_train)
 
 # 8. SAFE EVALUATION
+# Switch to CPU for prediction so it doesn't complain about CPU data being fed to a GPU model
+model.set_params(device='cpu')
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
+
 
 # 9. SAVE
 joblib.dump(model, "astarva_model.pkl")

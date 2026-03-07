@@ -10,7 +10,7 @@ from chatbot import render_chatbot
 
 
 st.set_page_config(
-    page_title="MedGuard AI — Drug Interaction Analyzer",
+    page_title="ClinicAlly — Drug Interaction Analyzer",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -19,6 +19,11 @@ st.set_page_config(
 if "theme" not in st.session_state:
     st.session_state.theme = "Dark Mode"
 
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "users" not in st.session_state:
+    st.session_state.users = {"admin": "admin123"}
 
 st.markdown(
     """
@@ -251,10 +256,115 @@ st.markdown(
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header[data-testid="stHeader"] {background: transparent;}
+
+    /* ===== LOGIN PAGE SPECIFIC ===== */
+    .login-wrapper {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 70vh;
+        width: 100%;
+    }
+    .login-card {
+        background: rgba(128, 128, 128, 0.08);
+        border: 1px solid rgba(128,128,128,0.2);
+        border-radius: 20px;
+        padding: 3rem;
+        width: 100%;
+        max-width: 450px;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+        text-align: center;
+    }
+    .login-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+    }
+    .login-title {
+        font-size: 1.8rem;
+        font-weight: 800;
+        margin-bottom: 0.5rem;
+        background: linear-gradient(135deg, #0a3d6b 0%, #1e88e5 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .login-subtitle {
+        font-size: 0.95rem;
+        color: rgba(128,128,128,0.8);
+        margin-bottom: 2rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# ── LOGIN INTERCEPTOR ──
+if not st.session_state.logged_in:
+    
+    # Render Login Form within a centered container
+    _, col, _ = st.columns([1, 1.2, 1])
+    with col:
+        st.markdown(
+            """
+            <div class="login-wrapper">
+                <div class="login-card">
+                    <div class="login-icon">🩺</div>
+                    <div class="login-title">ClinicAlly</div>
+                    <div class="login-subtitle">ASTRAVA 2026 Clinical Portal</div>
+                </div>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+        
+        # Tabbed interface for Login and Sign Up
+        tab_login, tab_signup = st.tabs(["🔐 Login", "📝 Sign Up"])
+        
+        with tab_login:
+            with st.form("login_form", clear_on_submit=False):
+                st.markdown("### Secure Login")
+                username = st.text_input("Healthcare ID / Username", placeholder="admin")
+                password = st.text_input("Password", type="password", placeholder="admin123")
+                submitted = st.form_submit_button("Authenticate 🔒", use_container_width=True)
+                
+                if submitted:
+                    if username in st.session_state.users and st.session_state.users[username] == password:
+                        st.session_state.logged_in = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid credentials. Please try again or sign up.")
+
+        with tab_signup:
+            with st.form("signup_form", clear_on_submit=True):
+                st.markdown("### Register New User")
+                new_user = st.text_input("Create Healthcare ID", placeholder="dr_smith")
+                new_pass = st.text_input("Create Password", type="password")
+                confirm_pass = st.text_input("Confirm Password", type="password")
+                registered = st.form_submit_button("Sign Up ✨", use_container_width=True)
+
+                if registered:
+                    if not new_user or not new_pass:
+                        st.warning("⚠️ Please fill in all fields.")
+                    elif new_user in st.session_state.users:
+                        st.error("❌ That username is already taken. Try another.")
+                    elif new_pass != confirm_pass:
+                        st.error("❌ Passwords do not match.")
+                    else:
+                        st.session_state.users[new_user] = new_pass
+                        st.success(f"✅ Account '{new_user}' created! You can now log in.")
+    
+    # Hide sidebar when logged out via completely hiding the container in CSS
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebar"] { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    st.stop()  # Stop execution so the rest of the app doesn't load
+
 
 # Load Drug List from Mapping File
 try:
@@ -417,10 +527,11 @@ def generate_safety_report(patient_data: dict, results: list[dict]) -> bytes:
     """Generate a simple PDF safety report from analysis results (no external deps)."""
     # Build readable text content
     lines: list[str] = []
-    lines.append("MedGuard AI  -  Drug Interaction Safety Report")
+    lines.append("ClinicAlly  -  Drug Interaction Safety Report")
     lines.append(f"Generated: {time.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
     lines.append("--- Patient Context ---")
+    lines.append(f"  Name: {patient_data.get('name', 'N/A')}")
     lines.append(f"  Age: {patient_data.get('age', 'N/A')}")
     lines.append(f"  Renal: {patient_data.get('renal', 'N/A')}")
     lines.append(f"  Liver: {patient_data.get('liver', 'N/A')}")
@@ -643,7 +754,7 @@ ALTERNATIVE_DRUGS: dict[str, list[dict]] = {
 # SIDEBAR
 
 with st.sidebar:
-    st.markdown("## 🏥 MedGuard AI")
+    st.markdown("## 🏥 ClinicAlly")
     st.markdown(
         '<span class="sidebar-badge">ASTRAVA 2026</span>',
         unsafe_allow_html=True,
@@ -661,6 +772,12 @@ with st.sidebar:
 
     if page == "🔍 Drug Analyzer":
         st.markdown("### 🏥 Patient Context")
+
+        patient_name = st.text_input(
+            "Patient Name",
+            placeholder="John Doe",
+            help="Full name of the patient",
+        )
 
         age = st.slider(
             "Patient Age",
@@ -688,6 +805,7 @@ with st.sidebar:
         
         # Package patient data for backend API
         patient_data = {
+            "name": patient_name,
             "age": age,
             "is_pregnant": pregnancy,
             "diabetes": diabetes,
@@ -802,7 +920,7 @@ else:
     st.markdown(
         """
         <div class="main-header">
-            <h1>🩺 MedGuard AI</h1>
+            <h1>🩺 ClinicAlly</h1>
             <p class="subtitle">Intelligent Drug Interaction Analyzer</p>
             <span class="badge">✦ Hackathon Prototype · ASTRAVA 2026</span>
         </div>
@@ -889,7 +1007,7 @@ else:
                         <div class="report-header">
                             <h3>📋 Interaction Report</h3>
                             <p class="meta">{drugs_label}</p>
-                            <p class="meta"><b>Patient:</b> {age} yrs, {gender} &nbsp;·&nbsp; Renal: {renal} &nbsp;·&nbsp; Liver: {liver}</p>
+                            <p class="meta"><b>Patient:</b> {patient_name} &nbsp;·&nbsp; {age} yrs, {gender} &nbsp;·&nbsp; Renal: {renal} &nbsp;·&nbsp; Liver: {liver}</p>
                         </div>
                         """,
                         unsafe_allow_html=True,
